@@ -218,22 +218,22 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	}
 
 	// Add file descriptors of all the sockets that are capable of it
-	restartFds := make(map[string]restartTriple)
+	restartFds := make(map[string][]restartTriple)
 	for _, s := range i.servers {
 		gs, srvOk := s.server.(GracefulServer)
 		ln, lnOk := s.listener.(Listener)
 		pc, pcOk := s.packet.(PacketConn)
 		if srvOk {
 			if lnOk && pcOk {
-				restartFds[gs.Address()] = restartTriple{server: gs, listener: ln, packet: pc}
+				restartFds[gs.Address()] = append(restartFds[gs.Address()], restartTriple{server: gs, listener: ln, packet: pc})
 				continue
 			}
 			if lnOk {
-				restartFds[gs.Address()] = restartTriple{server: gs, listener: ln}
+				restartFds[gs.Address()] = append(restartFds[gs.Address()], restartTriple{server: gs, listener: ln})
 				continue
 			}
 			if pcOk {
-				restartFds[gs.Address()] = restartTriple{server: gs, packet: pc}
+				restartFds[gs.Address()] = append(restartFds[gs.Address()], restartTriple{server: gs, packet: pc})
 				continue
 			}
 		}
@@ -484,7 +484,7 @@ func Start(cdyfile Input) (*Instance, error) {
 	return inst, nil
 }
 
-func startWithListenerFds(cdyfile Input, inst *Instance, restartFds map[string]restartTriple) error {
+func startWithListenerFds(cdyfile Input, inst *Instance, restartFds map[string][]restartTriple) error {
 	// save this instance in the list now so that
 	// plugins can access it if need be, for example
 	// the caddytls package, so it can perform cert
@@ -684,7 +684,7 @@ func executeDirectives(inst *Instance, filename string,
 	return nil
 }
 
-func startServers(serverList []Server, inst *Instance, restartFds map[string]restartTriple) error {
+func startServers(serverList []Server, inst *Instance, restartFds map[string][]restartTriple) error {
 	errChan := make(chan error, len(serverList))
 
 	// used for signaling to error logging goroutine to terminate
@@ -692,7 +692,7 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 	// used to track termination of servers
 	stopWg := &sync.WaitGroup{}
 
-	for _, s := range serverList {
+	for serverIdx, s := range serverList {
 		var (
 			ln  net.Listener
 			pc  net.PacketConn
@@ -734,7 +734,12 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		// reuse the listener for a graceful restart.
 		if gs, ok := s.(GracefulServer); ok && restartFds != nil {
 			addr := gs.Address()
-			if old, ok := restartFds[addr]; ok {
+			// Multiple servers may use the same addr (SO_REUSEPORT option set), so it's important to ensure
+			// that we don't reuse the same listener/packetconn.
+			// We'll create new listeners in case number of servers with the same addr is greater than the number of restartTriples.
+			if triples, ok := restartFds[addr]; ok && serverIdx < len(triples) {
+				old := triples[serverIdx]
+
 				// listener
 				if old.listener != nil {
 					file, err := old.listener.File()
