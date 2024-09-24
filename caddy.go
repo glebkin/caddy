@@ -1,5 +1,7 @@
 // Copyright 2015 Light Code Labs, LLC
 //
+// Copyright 2024 MWS
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -692,7 +694,7 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string][]r
 	// used to track termination of servers
 	stopWg := &sync.WaitGroup{}
 
-	for serverIdx, s := range serverList {
+	for _, s := range serverList {
 		var (
 			ln  net.Listener
 			pc  net.PacketConn
@@ -736,9 +738,13 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string][]r
 			addr := gs.Address()
 			// Multiple servers may use the same addr (SO_REUSEPORT option set), so it's important to ensure
 			// that we don't reuse the same listener/packetconn.
-			// We'll create new listeners in case number of servers with the same addr is greater than the number of restartTriples.
-			if triples, ok := restartFds[addr]; ok && serverIdx < len(triples) {
-				old := triples[serverIdx]
+			// We'll create new listeners in case there are no more available triples for the same address.
+			if triples, ok := restartFds[addr]; ok && len(triples) > 0 {
+				// Take first available triple
+				old := triples[0]
+				// Remove reused triple from restartFds
+				triples[0] = triples[len(triples)-1]
+				restartFds[addr] = triples[:len(triples)-1]
 
 				// listener
 				if old.listener != nil {
